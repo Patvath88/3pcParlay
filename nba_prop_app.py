@@ -5,9 +5,13 @@ import time
 import pickle
 from sklearn.ensemble import RandomForestRegressor  # we'll regress actual stat values
 
-API_KEY = "7f4db7a9‑c34e‑478d‑a799‑fef77b9d1f78"
+API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"
+
+# sanitize API key to avoid Latin-1 header errors
+API_KEY = API_KEY.encode("utf-8", "ignore").decode("utf-8").strip()
+
 HEADERS = {"Authorization": API_KEY}
-BASE_URL = "https://api.balldontlie.io/v1"
+
 
 # Utility to fetch all pages
 def fetch_all(endpoint, params=None, per_page=100, sleep_time=0.5):
