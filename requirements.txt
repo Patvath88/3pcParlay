@@ -3,7 +3,5 @@ pandas
 numpy
 requests
 scikit-learn
-xgboost
-lightgbm
-catboost
 nba_api
+xgboost
