@@ -1,11 +1,6 @@
 """
-models.py — Safe & Cloud-Compatible Version
-Includes:
-- CatBoost disabled
-- LightGBM optional
-- XGBoost optional
-- Neural net optional
-- Full error protection
+models.py — Fast Version
+Only XGBoost + RandomForest are used for maximum speed.
 """
 
 from __future__ import annotations
@@ -15,38 +10,15 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# Optional Models
+# Optional XGBoost
 try:
     import xgboost as xgb
 except ImportError:
     xgb = None
-
-try:
-    import lightgbm as lgb
-except ImportError:
-    lgb = None
-
-# CatBoost is disabled due to incompatibility
-cb = None
-
-# Neural net
-try:
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Dense, Dropout
-    from tensorflow.keras.optimizers import Adam
-except ImportError:
-    Sequential = None
-    Dense = None
-    Dropout = None
-    Adam = None
 
 
 @dataclass
@@ -59,11 +31,11 @@ class ModelInfo:
 
 @dataclass
 class ModelManager:
-    use_neural: bool = False
     random_state: Optional[int] = None
     models: Dict[str, ModelInfo] = field(default_factory=dict, init=False)
 
     def train(self, X: pd.DataFrame, y: pd.Series, test_size: float = 0.2):
+        """Train only RandomForest and XGBoost."""
         self.models.clear()
 
         X_train, X_test, y_train, y_test = train_test_split(
@@ -73,63 +45,35 @@ class ModelManager:
         def _evaluate(name, model):
             model.fit(X_train, y_train)
             preds = model.predict(X_test)
-            mae = float(mean_absolute_error(y_test, preds))
-            mse = float(mean_squared_error(y_test, preds))
-            self.models[name] = ModelInfo(name, model, mae, mse)
+            self.models[name] = ModelInfo(
+                name=name,
+                model=model,
+                mae=float(mean_absolute_error(y_test, preds)),
+                mse=float(mean_squared_error(y_test, preds)),
+            )
 
-        # Base Models
-        _evaluate("LinearRegression", LinearRegression())
-        _evaluate("Ridge", Ridge(random_state=self.random_state))
-        _evaluate("Lasso", Lasso(random_state=self.random_state))
-        _evaluate("DecisionTree", DecisionTreeRegressor(random_state=self.random_state))
+        # --------------------------
+        # Random Forest (FAST)
+        # --------------------------
         _evaluate("RandomForest", RandomForestRegressor(
-            n_estimators=200, random_state=self.random_state, n_jobs=-1))
-        _evaluate("GradientBoosting", GradientBoostingRegressor(
-            random_state=self.random_state))
-        _evaluate("KNN", KNeighborsRegressor())
-        _evaluate("SVR", SVR(kernel="rbf"))
+            n_estimators=200,
+            random_state=self.random_state,
+            n_jobs=-1
+        ))
 
-        # Optional Models
+        # --------------------------
+        # XGBoost (FAST & ACCURATE)
+        # --------------------------
         if xgb is not None:
             _evaluate("XGBoost", xgb.XGBRegressor(
                 n_estimators=250,
-                learning_rate=0.06,
-                max_depth=4,
+                learning_rate=0.08,
+                max_depth=5,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                random_state=self.random_state or 0
+                random_state=self.random_state or 0,
+                tree_method="hist"  # FASTER
             ))
-
-        if lgb is not None:
-            _evaluate("LightGBM", lgb.LGBMRegressor(
-                n_estimators=300,
-                learning_rate=0.05,
-                num_leaves=31,
-                objective="regression",
-                random_state=self.random_state or 0
-            ))
-
-        # Neural Net
-        if self.use_neural and Sequential is not None:
-            # Normalize
-            X_train_nn = (X_train - X_train.mean()) / (X_train.std() + 1e-8)
-            X_test_nn = (X_test - X_train.mean()) / (X_train.std() + 1e-8)
-
-            model = Sequential()
-            model.add(Dense(128, activation="relu", input_shape=(X_train_nn.shape[1],)))
-            model.add(Dropout(0.2))
-            model.add(Dense(64, activation="relu"))
-            model.add(Dropout(0.2))
-            model.add(Dense(1))
-
-            model.compile(optimizer=Adam(learning_rate=0.001), loss="mse")
-            model.fit(X_train_nn, y_train, epochs=40, batch_size=32, verbose=0)
-
-            preds = model.predict(X_test_nn).flatten()
-            mae = float(mean_absolute_error(y_test, preds))
-            mse = float(mean_squared_error(y_test, preds))
-
-            self.models["NeuralNetwork"] = ModelInfo("NeuralNetwork", model, mae, mse)
 
         return self.models
 
