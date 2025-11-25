@@ -12,7 +12,7 @@ HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
 # --- Utils ---
 @st.cache_resource
-def fetch_all_players():
+def fetch_all_players(active_only=True):
     results = []
     page = 1
     while True:
@@ -29,13 +29,19 @@ def fetch_all_players():
             if data.get("meta", {}).get("next_cursor") is None:
                 break
             page += 1
-            time.sleep(1.0)
+            time.sleep(0.5)
         except Exception as e:
             st.error(f"Error fetching players: {e}")
             break
     df = pd.DataFrame(results)
     df["name"] = df["first_name"] + " " + df["last_name"]
-    return df.sort_values("name")
+
+    if active_only:
+        # Filter out players with no team (i.e., team['id'] == None or 'G League' etc.)
+        df = df[df["team"].apply(lambda x: x and x.get("id") is not None and "NBA" in x.get("full_name", "NBA"))]
+
+    return df.sort_values("name").reset_index(drop=True)
+
 
 def fetch_player_stats(player_id, n_games=20):
     results = []
