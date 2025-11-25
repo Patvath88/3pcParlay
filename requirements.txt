@@ -1,5 +1,4 @@
-pandas
-requests
-scikit-learn
-streamlit
-matplotlib
+# requirements.txt
+streamlit>=1.30,<2
+pandas>=2.2,<3
+requests>=2.32,<3
