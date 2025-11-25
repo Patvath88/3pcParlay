@@ -112,12 +112,11 @@ def load_player_list():
 
 
 # ============================================================
-# MODEL CACHE — trains ONCE per player
+# MODEL CACHE
 # ============================================================
 
 @st.cache_resource
 def get_cached_models(player_id: int, stat_choice: str, X: pd.DataFrame, y: pd.Series):
-    """Train ALL MODELS once per player + stat. Future predictions instant."""
     manager = ModelManager(random_state=42)
     manager.train(X, y)
     return manager
@@ -146,18 +145,45 @@ def main():
         st.info("Select player/stat and click Predict.")
         return
 
-    # Load logs
-    year = datetime.date.today().year
-    season = f"{year-1}-{str(year)[-2:]}"
-    logs = dfetch.get_player_game_logs_nba(player_id, season)
+    # ============================================================
+    # LOAD CURRENT + PREVIOUS SEASON GAME LOGS
+    # ============================================================
+
+    today = datetime.date.today()
+
+    # NBA season starts in October — adjust season year dynamically
+    season_start_year = today.year if today.month >= 10 else today.year - 1
+
+    current_season = f"{season_start_year}-{str(season_start_year+1)[-2:]}"
+    previous_season = f"{season_start_year-1}-{str(season_start_year)[-2:]}"
+
+    st.write(f"Loading data from {current_season} first, then {previous_season}...")
+
+    logs_cur = dfetch.get_player_game_logs_nba(player_id, current_season)
+    logs_cur = dfetch.clean_nba_game_logs(logs_cur)
+
+    logs_prev = dfetch.get_player_game_logs_nba(player_id, previous_season)
+    logs_prev = dfetch.clean_nba_game_logs(logs_prev)
+
+    # Priority: CURRENT season → then PREVIOUS
+    logs = pd.concat([logs_cur, logs_prev], ignore_index=True)
 
     if logs.empty:
-        st.error("No data found.")
+        st.error("No usable game logs found for current or previous season.")
         return
 
-    df = build_training_dataset(logs)
+    # Use last 40 games max
+    logs = logs.sort_values("GAME_DATE").tail(40).reset_index(drop=True)
 
-    # Build target
+    # ============================================================
+    # Build feature dataset
+    # ============================================================
+
+    df = build_training_dataset(logs)
+    if df.empty:
+        st.error("Insufficient data after feature engineering.")
+        return
+
     target = PROP_MAP[stat_choice]
     if isinstance(target, list):
         df["TARGET"] = df[target].sum(axis=1)
@@ -166,7 +192,6 @@ def main():
 
     y = df["TARGET"]
 
-    # Build feature matrix (numeric only)
     remove_cols = [
         "TARGET","MATCHUP","GAME_DATE","OPP_TEAM",
         "SEASON_ID","TEAM_ABBREVIATION","WL","VIDEO_AVAILABLE"
@@ -174,38 +199,34 @@ def main():
     X = df.drop(columns=remove_cols, errors="ignore")
     X = X.select_dtypes(include=["float","int"])
 
-    # TRAIN OR LOAD CACHED MODELS
     manager = get_cached_models(player_id, stat_choice, X, y)
 
-    # Predict next game
+    # Next-game prediction = last row
     X_next = X.tail(1)
-    predictions = manager.predict(X_next)
+    manager.predict(X_next)
     best = manager.best_model()
 
     # ============================================================
-    # DISPLAY RESULTS
+    # Display Output
     # ============================================================
 
     st.subheader("Model Predictions")
-    out = []
+    rows = []
     for name, info in manager.models.items():
-        out.append({
+        rows.append({
             "Model": name,
             "Prediction": info.prediction,
             "MAE": info.mae,
             "MSE": info.mse
         })
 
-    st.dataframe(pd.DataFrame(out).sort_values("MAE"), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows).sort_values("MAE"), use_container_width=True)
 
-    st.success(
-        f"Best Model: **{best.name}** → Prediction: **{best.prediction:.1f} {stat_choice}**"
-    )
+    st.success(f"Best Model: **{best.name}** → Prediction: **{best.prediction:.1f} {stat_choice}**")
 
-    st.subheader("Recent Games")
+    st.subheader("Recent Games Used (max 40)")
     st.dataframe(
-        logs[["GAME_DATE","MATCHUP","PTS","REB","AST",
-              "FG3M","STL","BLK","TOV","MIN"]],
+        logs[["GAME_DATE","MATCHUP","PTS","REB","AST","FG3M","STL","BLK","TOV","MIN"]],
         use_container_width=True
     )
 
