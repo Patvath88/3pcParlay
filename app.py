@@ -106,17 +106,17 @@ def build_training_dataset(game_logs: pd.DataFrame) -> pd.DataFrame:
 
     df = game_logs.copy()
 
-    # Rename VISITOR/HOME team columns
+    # Extract opponent abbreviation
     df["OPP_TEAM"] = df["MATCHUP"].str.extract(r"(?:vs\.|@)\s(.+)$")
 
-    # Add all engineered features
+    # FEATURE ENGINEERING
     df = compute_opponent_strength(df)
     df = add_lag_features(df)
     df = add_rolling_features(df)
     df = add_trend_features(df)
     df = add_context_features(df)
 
-    # Drop rows where lag features not available
+    # Drop rows missing lag features
     df = df.dropna().reset_index(drop=True)
     return df
 
@@ -146,7 +146,7 @@ def load_player_list():
 
 
 ###############################################################################
-# STREAMLIT UI
+# MAIN APP
 ###############################################################################
 
 def main():
@@ -179,8 +179,6 @@ def main():
             list(PROP_MAP.keys())
         )
 
-        lookback = st.slider("Games for Rolling Trends", 5, 20, 10, step=5)
-
         use_neural = st.checkbox("Use Neural Network?", False)
 
         run_pred = st.button("Predict Next Game")
@@ -206,23 +204,31 @@ def main():
 
     # Determine target variable
     prop = PROP_MAP[stat_choice]
-
     if isinstance(prop, list):
         train_df["TARGET"] = train_df[prop].sum(axis=1)
     else:
         train_df["TARGET"] = train_df[prop]
 
     y = train_df["TARGET"].astype(float)
+
+    # ------- REMOVE STRING COLUMNS ---------
     X = train_df.drop(
-        columns=["TARGET", "SEASON_ID", "TEAM_ABBREVIATION", "MATCHUP", "GAME_DATE"],
+        columns=[
+            "TARGET", "SEASON_ID", "TEAM_ABBREVIATION",
+            "TEAM_ID", "MATCHUP", "GAME_DATE",
+            "OPP_TEAM", "WL", "VIDEO_AVAILABLE"
+        ],
         errors="ignore"
     )
+
+    # Keep ONLY numerical columns
+    X = X.select_dtypes(include=["float", "int"])
 
     # Train models
     model_manager = ModelManager(use_neural=use_neural, random_state=42)
     models = model_manager.train(X, y)
 
-    # Show model results
+    # Show model evaluation
     st.subheader("Model Evaluation")
     perf = pd.DataFrame({
         "Model": [m.name for m in models.values()],
@@ -231,14 +237,13 @@ def main():
     }).sort_values("MAE")
     st.dataframe(perf, use_container_width=True)
 
-    # Build next-game prediction features
-    next_game_df = train_df.tail(1).drop(columns="TARGET")
-    predictions = model_manager.predict(next_game_df)
+    # Build prediction feature row (last row of train_df)
+    next_features = X.tail(1)
+    preds = model_manager.predict(next_features)
 
     best_model = model_manager.best_model()
-    final_pred = predictions[best_model.name][0]
+    final_pred = preds[best_model.name][0]
 
-    # Display prediction
     st.success(f"{stat_choice} Prediction: **{final_pred:.1f}** (Model = {best_model.name})")
 
     st.subheader("Recent Games")
