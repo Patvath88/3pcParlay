@@ -146,34 +146,26 @@ def main():
         return
 
     # ============================================================
-    # LOAD CURRENT + PREVIOUS SEASON GAME LOGS
+    # LOAD ONLY CURRENT-SEASON GAME LOGS
     # ============================================================
 
     today = datetime.date.today()
 
-    # NBA season starts in October — adjust season year dynamically
+    # If month >= October, we are in new season. Else still in last season.
     season_start_year = today.year if today.month >= 10 else today.year - 1
-
     current_season = f"{season_start_year}-{str(season_start_year+1)[-2:]}"
-    previous_season = f"{season_start_year-1}-{str(season_start_year)[-2:]}"
 
-    st.write(f"Loading data from {current_season} first, then {previous_season}...")
+    st.write(f"Loading **current season only**: {current_season}")
 
-    logs_cur = dfetch.get_player_game_logs_nba(player_id, current_season)
-    logs_cur = dfetch.clean_nba_game_logs(logs_cur)
-
-    logs_prev = dfetch.get_player_game_logs_nba(player_id, previous_season)
-    logs_prev = dfetch.clean_nba_game_logs(logs_prev)
-
-    # Priority: CURRENT season → then PREVIOUS
-    logs = pd.concat([logs_cur, logs_prev], ignore_index=True)
+    logs = dfetch.get_player_game_logs_nba(player_id, current_season)
+    logs = dfetch.clean_nba_game_logs(logs)
 
     if logs.empty:
-        st.error("No usable game logs found for current or previous season.")
+        st.error("No game logs found for the current season.")
         return
 
-    # Use last 40 games max
-    logs = logs.sort_values("GAME_DATE").tail(40).reset_index(drop=True)
+    # Only use available current-season games (no cap)
+    logs = logs.sort_values("GAME_DATE").reset_index(drop=True)
 
     # ============================================================
     # Build feature dataset
@@ -181,7 +173,7 @@ def main():
 
     df = build_training_dataset(logs)
     if df.empty:
-        st.error("Insufficient data after feature engineering.")
+        st.error("Not enough data from current-season games to build features.")
         return
 
     target = PROP_MAP[stat_choice]
@@ -224,7 +216,7 @@ def main():
 
     st.success(f"Best Model: **{best.name}** → Prediction: **{best.prediction:.1f} {stat_choice}**")
 
-    st.subheader("Recent Games Used (max 40)")
+    st.subheader("Current Season Games Used")
     st.dataframe(
         logs[["GAME_DATE","MATCHUP","PTS","REB","AST","FG3M","STL","BLK","TOV","MIN"]],
         use_container_width=True
