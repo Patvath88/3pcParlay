@@ -1,6 +1,6 @@
 """
 models.py — Cached Multi-Model Engine
-Fast + Streamlit Safe + Shows All Predictions + MAE/MSE.
+Fast + Streamlit-Safe + Shows All Predictions + MAE/MSE.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.neighbors import KNeighborsRegressor
 from sklearn.svm import SVR
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
@@ -24,6 +23,10 @@ try:
 except ImportError:
     xgb = None
 
+
+# ============================================================
+# Data Structures
+# ============================================================
 
 @dataclass
 class ModelInfo:
@@ -39,9 +42,17 @@ class ModelManager:
     random_state: Optional[int] = None
     models: Dict[str, ModelInfo] = field(default_factory=dict, init=False)
 
+    # ============================================================
+    # TRAIN ALL MODELS
+    # ============================================================
     def train(self, X: pd.DataFrame, y: pd.Series):
-        """Train ALL streamlit-friendly ML models."""
         self.models.clear()
+
+        # Protect against extremely small datasets
+        if len(X) < 3:
+            raise ValueError(
+                f"Not enough data to train models. Need >= 3 rows, have {len(X)}."
+            )
 
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.25, random_state=self.random_state
@@ -61,30 +72,44 @@ class ModelManager:
                 mse=float(mse)
             )
 
-       # Fast Models
-_evaluate("LinearRegression", LinearRegression())
-_evaluate("Ridge", Ridge(random_state=self.random_state))
-_evaluate("Lasso", Lasso(random_state=self.random_state))
-_evaluate("DecisionTree", DecisionTreeRegressor(random_state=self.random_state))
-_evaluate("RandomForest", RandomForestRegressor(
-    n_estimators=250, random_state=self.random_state, n_jobs=-1))
-_evaluate("GradientBoosting", GradientBoostingRegressor(random_state=self.random_state))
-_evaluate("SVR", SVR(kernel="rbf"))
+        # ============================================================
+        # MODELS (KNN REMOVED)
+        # ============================================================
+        _evaluate("LinearRegression", LinearRegression())
+        _evaluate("Ridge", Ridge(random_state=self.random_state))
+        _evaluate("Lasso", Lasso(random_state=self.random_state))
+        _evaluate("DecisionTree", DecisionTreeRegressor(random_state=self.random_state))
+        _evaluate(
+            "RandomForest",
+            RandomForestRegressor(
+                n_estimators=250,
+                random_state=self.random_state,
+                n_jobs=-1
+            )
+        )
+        _evaluate("GradientBoosting", GradientBoostingRegressor(random_state=self.random_state))
+        _evaluate("SVR", SVR(kernel="rbf"))
 
-# XGBoost (streamlit-safe if installed)
-if xgb is not None:
-    _evaluate("XGBoost", xgb.XGBRegressor(
-        n_estimators=250,
-        learning_rate=0.07,
-        max_depth=5,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=self.random_state or 0,
-        tree_method="hist"
-    ))
+        # Optional XGBoost if available
+        if xgb is not None:
+            _evaluate(
+                "XGBoost",
+                xgb.XGBRegressor(
+                    n_estimators=250,
+                    learning_rate=0.07,
+                    max_depth=5,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    random_state=self.random_state or 0,
+                    tree_method="hist",
+                )
+            )
 
         return self.models
 
+    # ============================================================
+    # PREDICT ON NEW INPUT
+    # ============================================================
     def predict(self, X_new: pd.DataFrame) -> Dict[str, float]:
         preds = {}
         for name, info in self.models.items():
@@ -96,6 +121,9 @@ if xgb is not None:
                 continue
         return preds
 
+    # ============================================================
+    # GET BEST MODEL
+    # ============================================================
     def best_model(self) -> Optional[ModelInfo]:
         if not self.models:
             return None
