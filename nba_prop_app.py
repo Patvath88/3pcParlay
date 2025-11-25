@@ -35,13 +35,9 @@ def fetch_all_players(active_only=True):
             break
     df = pd.DataFrame(results)
     df["name"] = df["first_name"] + " " + df["last_name"]
-
     if active_only:
-        # Filter out players with no team (i.e., team['id'] == None or 'G League' etc.)
         df = df[df["team"].apply(lambda x: x and x.get("id") is not None and "NBA" in x.get("full_name", "NBA"))]
-
     return df.sort_values("name").reset_index(drop=True)
-
 
 def fetch_player_stats(player_id, n_games=20):
     results = []
@@ -87,7 +83,7 @@ players_df = fetch_all_players()
 model, feature_cols = load_model()
 
 # --- UI ---
-st.title("🏀 NBA Player Prop Predictor + Recent Stats")
+st.title("🏀 NBA Player Prop Predictor")
 
 selected_name = st.selectbox("Select a player:", players_df["name"].tolist())
 player_row = players_df[players_df["name"] == selected_name].iloc[0]
@@ -118,6 +114,6 @@ if not stats_df.empty:
         st.subheader("🔮 Predicted Stats")
         st.write(f"Predicted Points: **{pred_pts:.1f}**")
     else:
-        st.info("Model not trained or not enough recent games to predict.")
+        st.info("Model not trained or not enough data to predict.")
 else:
-    st.warning("No game data available for this player.")
+    st.warning("No stats available for this player.")
