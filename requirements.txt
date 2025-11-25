@@ -2,3 +2,4 @@
 streamlit>=1.30,<2
 pandas>=2.2,<3
 requests>=2.32,<3
+streamlit-autorefresh>=1.0,<2
