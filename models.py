@@ -61,28 +61,27 @@ class ModelManager:
                 mse=float(mse)
             )
 
-        # Fast Models
-        _evaluate("LinearRegression", LinearRegression())
-        _evaluate("Ridge", Ridge(random_state=self.random_state))
-        _evaluate("Lasso", Lasso(random_state=self.random_state))
-        _evaluate("DecisionTree", DecisionTreeRegressor(random_state=self.random_state))
-        _evaluate("RandomForest", RandomForestRegressor(
-            n_estimators=250, random_state=self.random_state, n_jobs=-1))
-        _evaluate("GradientBoosting", GradientBoostingRegressor(random_state=self.random_state))
-        _evaluate("KNN", KNeighborsRegressor())
-        _evaluate("SVR", SVR(kernel="rbf"))
+       # Fast Models
+_evaluate("LinearRegression", LinearRegression())
+_evaluate("Ridge", Ridge(random_state=self.random_state))
+_evaluate("Lasso", Lasso(random_state=self.random_state))
+_evaluate("DecisionTree", DecisionTreeRegressor(random_state=self.random_state))
+_evaluate("RandomForest", RandomForestRegressor(
+    n_estimators=250, random_state=self.random_state, n_jobs=-1))
+_evaluate("GradientBoosting", GradientBoostingRegressor(random_state=self.random_state))
+_evaluate("SVR", SVR(kernel="rbf"))
 
-        # XGBoost (streamlit-safe if installed)
-        if xgb is not None:
-            _evaluate("XGBoost", xgb.XGBRegressor(
-                n_estimators=250,
-                learning_rate=0.07,
-                max_depth=5,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=self.random_state or 0,
-                tree_method="hist"
-            ))
+# XGBoost (streamlit-safe if installed)
+if xgb is not None:
+    _evaluate("XGBoost", xgb.XGBRegressor(
+        n_estimators=250,
+        learning_rate=0.07,
+        max_depth=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=self.random_state or 0,
+        tree_method="hist"
+    ))
 
         return self.models
 
