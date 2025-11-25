@@ -1,45 +1,75 @@
-import requests
+import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 from xgboost import XGBRegressor
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
-# ------------------------------------------------------------
+# --------------------------------------------------
 # CONFIG
-# ------------------------------------------------------------
+# --------------------------------------------------
 API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
+st.set_page_config(
+    page_title="NBA Player Research + Projection AI",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ------------------------------------------------------------
-# GENERIC API WRAPPER WITH SAFETY
-# ------------------------------------------------------------
+st.markdown("""
+<style>
+    body, .stApp {
+        background-color: #0d1117;
+        color: white;
+    }
+    .big-title {
+        font-size: 34px;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+    .subheader {
+        font-size: 20px;
+        margin-top: 25px;
+        margin-bottom: 5px;
+    }
+    .stDataFrame, .stTable {
+        background-color: #161b22;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --------------------------------------------------
+# API WRAPPER
+# --------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch(endpoint, params=None):
     try:
-        r = requests.get(f"{BASE_URL}/{endpoint}", params=params, headers=HEADERS, timeout=10)
+        r = requests.get(
+            f"{BASE_URL}/{endpoint}",
+            params=params,
+            headers=HEADERS,
+            timeout=10
+        )
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print("Fetch error:", endpoint, e)
-        return {"data": []}
+        return {"data": [], "error": str(e)}
 
+# --------------------------------------------------
+# PLAYER SEARCH
+# --------------------------------------------------
+def find_player(name):
+    res = fetch("players", {"search": name})
+    players = res.get("data", [])
+    return players
 
-# ------------------------------------------------------------
-# PLAYER LOOKUP
-# ------------------------------------------------------------
-def find_player(player_name):
-    res = fetch("players", {"search": player_name})
-    if len(res.get("data", [])) == 0:
-        raise ValueError(f"No player found for query: {player_name}")
-    return res["data"][0]
-
-
-# ------------------------------------------------------------
-# FULL GAME LOGS
-# ------------------------------------------------------------
+# --------------------------------------------------
+# GAME LOGS
+# --------------------------------------------------
 def get_full_game_logs(player_id, seasons=range(2014, 2025)):
     frames = []
     for season in seasons:
@@ -69,10 +99,34 @@ def get_full_game_logs(player_id, seasons=range(2014, 2025)):
 
     return df
 
+# --------------------------------------------------
+# FEATURE ENGINEERING
+# --------------------------------------------------
+def build_features(df):
+    stat_cols = ["pts", "reb", "ast", "stl", "blk", "turnover", "fg3m", "min"]
+    results = []
 
-# ------------------------------------------------------------
-# UPCOMING GAME FETCH (predict opponent)
-# ------------------------------------------------------------
+    for _, row in df.iterrows():
+        stats = row["stats"]
+        game = row["game"]
+        rec = {col: stats.get(col, 0) for col in stat_cols}
+        rec["date"] = game.get("date")
+        results.append(rec)
+
+    df2 = pd.DataFrame(results)
+    df2["min"] = df2["min"].astype(float)
+
+    df2["pra"] = df2["pts"] + df2["reb"] + df2["ast"]
+    df2["pr"] = df2["pts"] + df2["reb"]
+    df2["pa"] = df2["pts"] + df2["ast"]
+    df2["ra"] = df2["reb"] + df2["ast"]
+
+    df2 = df2.sort_values("date")
+    return df2.reset_index(drop=True)
+
+# --------------------------------------------------
+# NEXT MATCHUP
+# --------------------------------------------------
 def get_next_game(team_id):
     today = datetime.today().date()
     future = today + timedelta(days=7)
@@ -87,151 +141,113 @@ def get_next_game(team_id):
     if not games:
         return None
 
-    # pick the closest game
-    games_sorted = sorted(games, key=lambda g: g["date"])
-    return games_sorted[0]
+    return sorted(games, key=lambda g: g["date"])[0]
 
-
-# ------------------------------------------------------------
-# FEATURE ENGINEERING
-# ------------------------------------------------------------
-def build_features(df):
-    # Extract nested stat fields into columns cleanly
-    stat_cols = [
-        "pts", "reb", "ast", "stl", "blk", "turnover",
-        "fg3m", "min"
-    ]
-    results = []
-    for _, row in df.iterrows():
-        stats = row["stats"]
-        game = row["game"]
-
-        # Many statistics live inside nested objects
-        rec = {col: stats.get(col, 0) for col in stat_cols}
-        rec["date"] = game.get("date")
-        results.append(rec)
-
-    df2 = pd.DataFrame(results)
-    df2["min"] = df2["min"].astype(float)
-
-    # Derivative props
-    df2["pra"] = df2["pts"] + df2["reb"] + df2["ast"]
-    df2["pr"] = df2["pts"] + df2["reb"]
-    df2["pa"] = df2["pts"] + df2["ast"]
-    df2["ra"] = df2["reb"] + df2["ast"]
-
-    df2 = df2.sort_values("date")
-    return df2.reset_index(drop=True)
-
-
-# ------------------------------------------------------------
-# TRAIN MODEL + PROJECT NEXT GAME
-# ------------------------------------------------------------
-def project_next_game(df_features):
+# --------------------------------------------------
+# MODELING
+# --------------------------------------------------
+def project_next_game(df):
     X_cols = ["min"]
-    y_cols = ["pts", "reb", "ast", "stl", "blk", "turnover", "fg3m",
-              "pra", "pr", "pa", "ra"]
+    targets = ["pts", "reb", "ast", "stl", "blk", "turnover", "fg3m",
+               "pra", "pr", "pa", "ra"]
 
     results = {}
 
-    for target in y_cols:
-        good = df_features.dropna(subset=[target])
+    for t in targets:
+        good = df.dropna(subset=[t])
         if len(good) < 6:
-            results[target] = None
+            results[t] = None
             continue
 
         X = good[X_cols]
-        y = good[target]
+        y = good[t]
 
         model = XGBRegressor(
-            n_estimators=120,
+            n_estimators=150,
             max_depth=3,
-            learning_rate=0.08,
-            subsample=0.9,
-            colsample_bytree=0.9,
+            learning_rate=0.07,
+            subsample=0.8,
+            colsample_bytree=0.8,
             objective="reg:squarederror"
         )
         model.fit(X, y)
 
-        next_min = df_features["min"].tail(5).mean()
+        next_min = df["min"].tail(5).mean()
         pred = model.predict(np.array([[next_min]]))[0]
-        results[target] = round(float(pred), 2)
+
+        results[t] = round(float(pred), 2)
 
     return results
 
+# --------------------------------------------------
+# APP UI
+# --------------------------------------------------
+st.markdown("<div class='big-title'>NBA Player Research + Projection AI</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------
-# CAREER HIGHS / LOWS
-# ------------------------------------------------------------
-def compute_high_lows(df):
-    numeric = df.select_dtypes("number")
-    return {
-        col: {
-            "career_high": float(numeric[col].max()),
-            "career_low": float(numeric[col].min()),
-        }
-        for col in numeric.columns
-    }
+player_name = st.text_input("Search Player Name", value="", placeholder="LeBron James")
 
+if player_name.strip() == "":
+    st.stop()
 
-# ------------------------------------------------------------
-# MAIN PIPELINE
-# ------------------------------------------------------------
-def research_and_project(player_name):
-    # Identify player
-    player = find_player(player_name)
-    player_id = player["id"]
-    team_id = player["team"]["id"]
+players = find_player(player_name)
 
-    # Full history
+if len(players) == 0:
+    st.error("No players found.")
+    st.stop()
+
+player = players[0]
+player_id = player["id"]
+team_id = player["team"]["id"]
+
+st.subheader(f"Player Selected: {player['first_name']} {player['last_name']} – {player['team']['full_name']}")
+
+# --------------------------------------------------
+# LOAD GAME LOGS
+# --------------------------------------------------
+with st.spinner("Loading full game logs..."):
     logs = get_full_game_logs(player_id)
-    if logs.empty:
-        raise ValueError("No stats found for this player.")
 
-    # Build features
-    df_features = build_features(logs)
+if logs.empty:
+    st.error("No historical data found for this player.")
+    st.stop()
 
-    # Highs + Lows
-    high_low = compute_high_lows(df_features)
+# Build features
+df = build_features(logs)
 
-    # Recent form segments
-    recent = {
-        "last_1": df_features.tail(1).to_dict("records"),
-        "last_5": df_features.tail(5).to_dict("records"),
-        "last_10": df_features.tail(10).to_dict("records"),
-        "last_15": df_features.tail(15).to_dict("records"),
-        "last_20": df_features.tail(20).to_dict("records"),
-    }
+# Recent form
+st.markdown("<div class='subheader'>Recent Form</div>", unsafe_allow_html=True)
+tabs = st.tabs(["Last 1", "Last 5", "Last 10", "Last 15", "Last 20"])
 
-    # Next opponent
-    next_game = get_next_game(team_id)
-    if next_game:
-        opp = next_game["visitor_team"] if next_game["home_team"]["id"] == team_id else next_game["home_team"]
-        opp_name = opp["full_name"]
-    else:
-        opp = None
-        opp_name = None
+segments = {
+    "Last 1": df.tail(1),
+    "Last 5": df.tail(5),
+    "Last 10": df.tail(10),
+    "Last 15": df.tail(15),
+    "Last 20": df.tail(20),
+}
 
-    # Projection
-    projections = project_next_game(df_features)
+for t, key in zip(tabs, segments):
+    t.dataframe(segments[key], use_container_width=True)
 
-    # OUTPUT PACKAGE
-    return {
-        "player_info": player,
-        "summary_stats": df_features.describe().to_dict(),
-        "career_highs_lows": high_low,
-        "recent_form": recent,
-        "next_game": next_game,
-        "next_opponent": opp_name,
-        "projections": projections,
-    }
+# Career highs/lows
+st.markdown("<div class='subheader'>Career Highs & Lows</div>", unsafe_allow_html=True)
+highs = df.describe().loc[["min", "50%", "max"]]
+st.dataframe(highs, use_container_width=True)
 
+# Next matchup
+next_game = get_next_game(team_id)
+if next_game:
+    opp = next_game["visitor_team"] if next_game["home_team"]["id"] == team_id else next_game["home_team"]
+    st.markdown("<div class='subheader'>Next Matchup</div>", unsafe_allow_html=True)
+    st.write(f"Next Opponent: **{opp['full_name']}** on **{next_game['date']}**")
 
-# ------------------------------------------------------------
-# RUN EXAMPLE
-# ------------------------------------------------------------
-if __name__ == "__main__":
-    player = "Stephen Curry"   # change to any player
-    results = research_and_project(player)
-    print("\n=== PLAYER RESEARCH REPORT ===")
-    print(results)
+# Projections
+st.markdown("<div class='subheader'>AI Projected Next Game Stats</div>", unsafe_allow_html=True)
+
+with st.spinner("Building model and generating projections..."):
+    projections = project_next_game(df)
+
+proj_df = pd.DataFrame(projections.items(), columns=["Stat", "Projection"])
+st.dataframe(proj_df, use_container_width=True)
+
+st.success("Research + projections complete.")
