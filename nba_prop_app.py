@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import time
 import pickle
-from sklearn.ensemble import RandomForestRegressor
 
 # --- API Setup ---
 BASE_URL = "https://api.balldontlie.io/v1"
@@ -12,28 +11,58 @@ API_KEY = API_KEY.encode("utf-8", "ignore").decode("utf-8").strip()
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
 # --- Utils ---
-def fetch_all(endpoint, params=None, per_page=100, sleep_time=0.5):
+@st.cache_resource
+def fetch_all_players():
     results = []
     page = 1
     while True:
         try:
-            p = dict(params) if params else {}
-            p.update({"page": page, "per_page": per_page})
-            url = f"{BASE_URL}/{endpoint}"
-            resp = requests.get(url, params=p, headers=HEADERS)
-            resp.raise_for_status()
+            url = f"{BASE_URL}/players"
+            resp = requests.get(url, params={"page": page, "per_page": 100}, headers=HEADERS)
+            if resp.status_code == 429:
+                time.sleep(10)
+                continue
             data = resp.json()
             if not data.get("data"):
                 break
             results.extend(data["data"])
-            if not data.get("meta") or data["meta"].get("next_cursor") is None:
+            if data.get("meta", {}).get("next_cursor") is None:
                 break
             page += 1
-            time.sleep(sleep_time)
+            time.sleep(1.0)
         except Exception as e:
-            print(f"Error fetching {endpoint} (page {page}):", e)
+            st.error(f"Error fetching players: {e}")
             break
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    df["name"] = df["first_name"] + " " + df["last_name"]
+    return df.sort_values("name")
+
+def fetch_player_stats(player_id, n_games=20):
+    results = []
+    page = 1
+    while len(results) < n_games:
+        try:
+            url = f"{BASE_URL}/stats"
+            resp = requests.get(url, params={"player_ids[]": player_id, "page": page, "per_page": 100}, headers=HEADERS)
+            if resp.status_code == 429:
+                time.sleep(10)
+                continue
+            data = resp.json()
+            if not data.get("data"):
+                break
+            results.extend(data["data"])
+            if data.get("meta", {}).get("next_cursor") is None:
+                break
+            page += 1
+            time.sleep(1.0)
+        except Exception as e:
+            st.error(f"Error fetching stats: {e}")
+            break
+    df = pd.DataFrame(results[:n_games])
+    if not df.empty and "game" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game"].apply(lambda x: x.get("date") if x else None))
+        df["min"] = pd.to_numeric(df["min"], errors="coerce")
+    return df
 
 @st.cache_resource
 def load_model():
@@ -47,86 +76,42 @@ def load_model():
         feature_cols = []
     return model, feature_cols
 
+# --- Load Resources ---
+players_df = fetch_all_players()
 model, feature_cols = load_model()
 
-# --- Streamlit UI ---
-st.title("🏀 NBA Prop Predictor + Historical Stats")
+# --- UI ---
+st.title("🏀 NBA Player Prop Predictor + Recent Stats")
 
-mode = st.radio("Search by:", ("Player", "Team"))
+selected_name = st.selectbox("Select a player:", players_df["name"].tolist())
+player_row = players_df[players_df["name"] == selected_name].iloc[0]
+pid = player_row["id"]
 
-if mode == "Player":
-    player_name = st.text_input("Enter player name (e.g. LeBron James):")
-    if st.button("Search Player"):
-        players = fetch_all("players", params={"search": player_name})
-        if players.empty:
-            st.warning("No player found.")
-        else:
-            player = players.iloc[0]
-            pid = player["id"]
-            st.success(f"Found: {player['first_name']} {player['last_name']} (ID {pid})")
+st.subheader(f"Recent Stats for {selected_name}")
+stats_df = fetch_player_stats(pid)
 
-            stats = fetch_all("stats", params={"player_ids[]": pid})
-            stats["min"] = pd.to_numeric(stats["min"], errors="coerce")
-            stats = stats.sort_values("game.date", ascending=False).head(20)
+if not stats_df.empty:
+    df = stats_df[["game_date","pts","ast","reb","fg3m","stl","blk","turnover","min"]].copy()
+    df.rename(columns={"turnover": "tov"}, inplace=True)
+    df["pr"] = df["pts"] + df["reb"]
+    df["pa"] = df["pts"] + df["ast"]
+    df["ra"] = df["reb"] + df["ast"]
+    df["pra"] = df["pts"] + df["reb"] + df["ast"]
+    df = df.round(1)
 
-            hist = stats[["game.date","pts","ast","reb","fg3m","stl","blk","turnover","min"]].copy()
-            hist.rename(columns={"turnover": "tov"}, inplace=True)
-            hist["pr"] = hist["pts"] + hist["reb"]
-            hist["pa"] = hist["pts"] + hist["ast"]
-            hist["ra"] = hist["reb"] + hist["ast"]
-            hist["pra"] = hist["pts"] + hist["reb"] + hist["ast"]
+    st.dataframe(df)
 
-            st.subheader("Recent Historical Stats (Last 20 Games)")
-            st.dataframe(hist)
-
-            if model is not None:
-                last3 = stats.head(3)
-                feats = {
-                    "avg_pts_last3": last3["pts"].mean(),
-                    "avg_min_last3": last3["min"].mean()
-                }
-                X = pd.DataFrame([feats])[feature_cols]
-                pred_pts = model.predict(X)[0]
-                st.subheader("🔮 Predicted Stats")
-                st.write(f"Predicted Points: **{pred_pts:.1f}**")
-            else:
-                st.info("Model not trained — using historical data only.")
-
-if mode == "Team":
-    team_query = st.text_input("Enter team name (e.g. Lakers):")
-    if st.button("Search Team"):
-        teams = fetch_all("teams")
-        match = teams[teams["full_name"].str.contains(team_query, case=False, na=False)]
-        if match.empty:
-            st.warning("Team not found.")
-        else:
-            team = match.iloc[0]
-            tid = team["id"]
-            st.success(f"Team Found: {team['full_name']} (ID {tid})")
-
-            players = fetch_all("players", params={"team_ids[]": tid})
-            st.subheader("Roster")
-            players["name"] = players["first_name"] + " " + players["last_name"]
-            st.dataframe(players[["name", "position"]])
-
-            results = []
-            for idx, row in players.iterrows():
-                pid = row["id"]
-                stats = fetch_all("stats", params={"player_ids[]": pid})
-                if stats.empty:
-                    continue
-                stats["min"] = pd.to_numeric(stats["min"], errors="coerce")
-                last3 = stats.sort_values("game.date", ascending=False).head(3)
-                feats = {
-                    "player": row["first_name"] + " " + row["last_name"],
-                    "avg_pts_last3": last3["pts"].mean(),
-                    "avg_min_last3": last3["min"].mean()
-                }
-                if model is not None and feature_cols:
-                    X = pd.DataFrame([feats])[feature_cols]
-                    feats["pred_pts"] = model.predict(X)[0]
-                results.append(feats)
-
-            st.subheader("Team Predictions")
-            df_res = pd.DataFrame(results)
-            st.dataframe(df_res.sort_values("pred_pts", ascending=False if "pred_pts" in df_res else True))
+    if model is not None and len(df) >= 3:
+        last3 = df.head(3)
+        feats = {
+            "avg_pts_last3": last3["pts"].mean(),
+            "avg_min_last3": last3["min"].mean()
+        }
+        X = pd.DataFrame([feats])[feature_cols]
+        pred_pts = model.predict(X)[0]
+        st.subheader("🔮 Predicted Stats")
+        st.write(f"Predicted Points: **{pred_pts:.1f}**")
+    else:
+        st.info("Model not trained or not enough recent games to predict.")
+else:
+    st.warning("No game data available for this player.")
