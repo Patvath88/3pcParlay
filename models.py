@@ -154,16 +154,9 @@ class ModelManager:
             _evaluate("LightGBM", lgb.LGBMRegressor(**lgb_params))
 
         # CatBoost (optional)
-        if cb is not None:
-            cb_params = {
-                "iterations": 300,
-                "learning_rate": 0.05,
-                "depth": 6,
-                "loss_function": "MAE",
-                "verbose": False,
-                "random_seed": self.random_state or 0,
-            }
-            _evaluate("CatBoost", cb.CatBoostRegressor(**cb_params))
+        # CatBoost is disabled because it is not supported on Streamlit Cloud & Python 3.13
+cb = None
+
 
         # Neural Network (optional)
         if self.use_neural and Sequential is not None:
